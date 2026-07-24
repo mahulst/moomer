@@ -27,10 +27,12 @@ xattr -d com.apple.quarantine moomer   # clear Gatekeeper quarantine if needed
 
 | Input                 | Action                                                              |
 | --------------------- | ------------------------------------------------------------------ |
-| **Scroll**            | Zoom in / out at the mouse cursor (nearest-neighbour, crisp pixels) |
+| **Scroll**            | Zoom in / out at the mouse cursor (0.2x–100x, nearest-neighbour, crisp pixels) |
+| **Click & drag**      | Pan the zoomed image around                                        |
 | **Ctrl + Scroll**     | Grow / shrink the spotlight radius                                  |
 | **Hold Ctrl**         | Dim the screen except a circular spotlight that follows the cursor  |
 | **Option**            | Toggle a horizontal mirror flip, anchored at the cursor            |
+| **0**                 | Reset zoom, pan, and flip to the original view                     |
 | **Esc**               | Dismiss the overlay and quit                                        |
 
 ## Build & run
