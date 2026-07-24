@@ -44,3 +44,23 @@ odin build . -out:moomer && ./moomer
 Screen capture requires **Screen Recording** permission for the launching
 process (System Settings → Privacy & Security → Screen Recording).
 
+## Hotkey with skhd
+
+Bind a global shortcut with [skhd](https://github.com/koekeishiya/skhd) by
+adding this to `~/.config/skhd/skhdrc`:
+
+```
+# Launch moomer screen annotation (Cmd + Option + S)
+cmd + alt - s : ~/.local/bin/moomer
+```
+
+Then reload skhd:
+
+```sh
+skhd --reload
+```
+
+Grant **Screen Recording** permission to skhd (the launching process) so the
+capture works.
+
+
