@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: latest
+
+      - name: Build
+        run: odin build . -out:moomer
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          tar -czf "moomer-${VERSION}-macos.tar.gz" moomer README.md
+          shasum -a 256 "moomer-${VERSION}-macos.tar.gz" > "moomer-${VERSION}-macos.tar.gz.sha256"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            moomer
+            moomer-${{ github.ref_name }}-macos.tar.gz
+            moomer-${{ github.ref_name }}-macos.tar.gz.sha256

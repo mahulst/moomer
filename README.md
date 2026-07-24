@@ -10,6 +10,19 @@ presenting.
 ## Demo
 <video src="https://github.com/user-attachments/assets/4a9256ab-eaa0-4dbf-9f75-21b698579e11" controls width="100%"></video>
 
+## Download
+
+Grab the latest macOS build from the
+[Releases](https://github.com/mahulst/moomer/releases/latest) page
+(`moomer` binary or `moomer-<version>-macos.tar.gz`).
+
+```sh
+# make it executable and run
+chmod +x moomer
+xattr -d com.apple.quarantine moomer   # clear Gatekeeper quarantine if needed
+./moomer
+```
+
 ## Controls
 
 | Input                 | Action                                                              |
