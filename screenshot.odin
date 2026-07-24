@@ -43,6 +43,7 @@ foreign CoreGraphics {
 	// Reads global key state without special permission.
 	// stateID: kCGEventSourceStateCombinedSessionState = 0
 	CGEventSourceKeyState :: proc "c" (stateID: i32, key: u16) -> NS.BOOL ---
+	CGEventSourceButtonState :: proc "c" (stateID: i32, button: u32) -> NS.BOOL ---
 }
 
 // --- AppKit types via Odin objc intrinsics ---
@@ -125,6 +126,7 @@ kVK_Escape :: u16(0x35)
 kVK_Option :: u16(0x3A)
 kVK_RightOption :: u16(0x3D)
 kCGEventSourceStateCombined :: i32(0)
+kCGMouseButtonLeft :: u32(0)
 
 g_spotlight_radius: CGFloat = 100
 MIN_RADIUS :: CGFloat(20)
@@ -143,6 +145,10 @@ g_offset: CGPoint = {0, 0}
 g_flipped: bool // horizontal mirror, toggled by Option
 g_opt_down: bool
 g_opt_armed: bool // ignore Option until it has been released once (it's held at launch)
+
+// Click-and-drag pan state.
+g_pan_down: bool
+g_pan_last: CGPoint
 
 MIN_SCALE :: CGFloat(1)
 MAX_SCALE :: CGFloat(100)
@@ -194,6 +200,14 @@ zoom_at :: proc "c" (m: CGPoint, f: CGFloat) {
 	// g_flipped and re-applied in apply_zoom/clamp_offset.
 	g_offset.x = m.x - ff * (m.x - g_offset.x)
 	g_offset.y = m.y - ff * (m.y - g_offset.y)
+	clamp_offset()
+	apply_zoom()
+}
+
+// Pan the content by a screen-space delta, keeping it clamped on-screen.
+pan_by :: proc "c" (dx, dy: CGFloat) {
+	g_offset.x += dx
+	g_offset.y += dy
 	clamp_offset()
 	apply_zoom()
 }
@@ -305,6 +319,17 @@ tick :: proc "c" (user_data: rawptr, timer: rawptr) {
 		bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_RightControl))
 
 	loc := msgSend(CGPoint, NSEvent, "mouseLocation")
+
+	// Click-and-drag to pan. Track the left mouse button globally and move
+	// the content by the cursor delta while held.
+	pan := bool(CGEventSourceButtonState(kCGEventSourceStateCombined, kCGMouseButtonLeft))
+	if pan {
+		if g_pan_down {
+			pan_by(loc.x - g_pan_last.x, loc.y - g_pan_last.y)
+		}
+		g_pan_last = loc
+	}
+	g_pan_down = pan
 
 	// Option toggles the horizontal flip on the press edge, about the cursor.
 	// moomer is often launched via an Option-containing hotkey, so ignore
