@@ -7,6 +7,12 @@ borderless, full-screen overlay. You can then zoom into pixels, spotlight the
 cursor, and mirror the view — useful for inspecting UI, counting pixels, or
 presenting.
 
+## Demo
+
+https://github.com/user-attachments/assets/moomer.mp4
+
+<video src="moomer.mp4" controls width="100%"></video>
+
 ## Controls
 
 | Input                 | Action                                                              |
