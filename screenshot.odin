@@ -123,6 +123,7 @@ NSEventModifierFlagControl :: NS.UInteger(1) << 18
 kVK_Control :: u16(0x3B)
 kVK_RightControl :: u16(0x3E)
 kVK_Escape :: u16(0x35)
+kVK_ANSI_0 :: u16(0x1D)
 kVK_Option :: u16(0x3A)
 kVK_RightOption :: u16(0x3D)
 kCGEventSourceStateCombined :: i32(0)
@@ -150,7 +151,9 @@ g_opt_armed: bool // ignore Option until it has been released once (it's held at
 g_pan_down: bool
 g_pan_last: CGPoint
 
-MIN_SCALE :: CGFloat(1)
+g_zero_down: bool // edge guard for the "0" reset key
+
+MIN_SCALE :: CGFloat(0.2)
 MAX_SCALE :: CGFloat(100)
 
 apply_zoom :: proc "c" () {
@@ -177,9 +180,22 @@ toggle_flip :: proc "c" (m: CGPoint) {
 }
 
 clamp_offset :: proc "c" () {
-	// x extent depends on flip sign; compute screen-space min/max of content.
-	a := g_flipped ? -g_scale : g_scale
 	w := g_bounds.size.width
+	h := g_bounds.size.height
+	a := g_flipped ? -g_scale : g_scale
+
+	// When zoomed out below original size the content is smaller than the
+	// screen, so center it instead of forcing it to cover the whole screen.
+	if g_scale < 1 {
+		// x: center the |a|*w-wide content in w.
+		center_lo := (w - g_scale * w) / 2
+		g_offset.x = g_flipped ? center_lo + g_scale * w : center_lo
+		// y: center the g_scale*h-tall content in h.
+		g_offset.y = (h - g_scale * h) / 2
+		return
+	}
+
+	// x extent depends on flip sign; compute screen-space min/max of content.
 	x0 := g_offset.x        // screen x of content x=0
 	x1 := a * w + g_offset.x // screen x of content x=w
 	lo := min(x0, x1)
@@ -187,7 +203,7 @@ clamp_offset :: proc "c" () {
 	// keep content covering [0, w]: lo <= 0 and hi >= w
 	if lo > 0 {g_offset.x -= lo}
 	if hi < w {g_offset.x += w - hi}
-	min_y := g_bounds.size.height - g_scale * g_bounds.size.height
+	min_y := h - g_scale * h
 	g_offset.y = clamp(g_offset.y, min_y, 0)
 }
 
@@ -204,9 +220,17 @@ zoom_at :: proc "c" (m: CGPoint, f: CGFloat) {
 	apply_zoom()
 }
 
+// Reset zoom, pan, and flip to the original view.
+reset_view :: proc "c" () {
+	g_scale = 1
+	g_flipped = false
+	g_offset = {0, 0}
+	clamp_offset()
+	apply_zoom()
+}
+
 // Pan the content by a screen-space delta, keeping it clamped on-screen.
-pan_by :: proc "c" (dx, dy: CGFloat) {
-	g_offset.x += dx
+pan_by :: proc "c" (dx, dy: CGFloat) {	g_offset.x += dx
 	g_offset.y += dy
 	clamp_offset()
 	apply_zoom()
@@ -330,6 +354,13 @@ tick :: proc "c" (user_data: rawptr, timer: rawptr) {
 		g_pan_last = loc
 	}
 	g_pan_down = pan
+
+	// "0" resets zoom, pan, and flip to the original view (press edge).
+	zero := bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_ANSI_0))
+	if zero && !g_zero_down {
+		reset_view()
+	}
+	g_zero_down = zero
 
 	// Option toggles the horizontal flip on the press edge, about the cursor.
 	// moomer is often launched via an Option-containing hotkey, so ignore
