@@ -8,10 +8,7 @@ cursor, and mirror the view — useful for inspecting UI, counting pixels, or
 presenting.
 
 ## Demo
-
-https://github.com/user-attachments/assets/moomer.mp4
-
-<video src="moomer.mp4" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/4a9256ab-eaa0-4dbf-9f75-21b698579e11" controls width="100%"></video>
 
 ## Controls
 
