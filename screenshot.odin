@@ -411,10 +411,10 @@ update_coords :: proc "c" (mouse: CGPoint, visible: bool) {
 		g_measure_active = true
 	}
 
-	// Count pixel-border crossings: floor both positions so each time the
-	// cursor moves into the next pixel the count changes by exactly 1.
-	dx := int(math.floor(f64(cx)) - math.floor(f64(g_measure_anchor.x)))
-	dy := int(math.floor(f64(cy)) - math.floor(f64(g_measure_anchor.y)))
+	// Inclusive pixel span, matching the drawn selection box: both the start
+	// and current pixel are counted, so a stationary cursor reads 1.
+	dx := int(abs(math.floor(f64(cx)) - math.floor(f64(g_measure_anchor.x)))) + 1
+	dy := int(abs(math.floor(f64(cy)) - math.floor(f64(g_measure_anchor.y)))) + 1
 
 	context = runtime.default_context()
 	str := fmt.ctprintf("x: %dpx\ny: %dpx", dx, dy)
