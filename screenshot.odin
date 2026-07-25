@@ -44,6 +44,13 @@ foreign CoreGraphics {
 	CGColorCreateGenericRGB :: proc "c" (r, g, b, a: CGFloat) -> CGColorRef ---
 	CGColorRelease :: proc "c" (color: CGColorRef) ---
 
+	// Reading a single pixel: draw a 1x1 crop into an RGBA bitmap context.
+	CGColorSpaceCreateDeviceRGB :: proc "c" () -> CGColorSpaceRef ---
+	CGColorSpaceRelease :: proc "c" (space: CGColorSpaceRef) ---
+	CGBitmapContextCreate :: proc "c" (data: rawptr, width, height, bitsPerComponent, bytesPerRow: uint, space: CGColorSpaceRef, bitmapInfo: u32) -> rawptr ---
+	CGContextDrawImage :: proc "c" (ctx: rawptr, rect: CGRect, image: CGImageRef) ---
+	CGContextRelease :: proc "c" (ctx: rawptr) ---
+
 	// Reads global key state without special permission.
 	// stateID: kCGEventSourceStateCombinedSessionState = 0
 	CGEventSourceKeyState :: proc "c" (stateID: i32, key: u16) -> NS.BOOL ---
@@ -192,6 +199,7 @@ g_rect_layer: ^CAShapeLayer // outline of the dragged area while Shift held
 g_image: CGImageRef
 g_sel_px_lo, g_sel_px_hi, g_sel_py_lo, g_sel_py_hi: f64
 g_copy_down: bool
+g_pick_down: bool // edge guard for the color-pick "c" (no Shift)
 
 MIN_SCALE :: CGFloat(0.2)
 MAX_SCALE :: CGFloat(100)
@@ -519,6 +527,55 @@ copy_selection :: proc "c" () {
 	fmt.printfln("[shift] copied %.0fx%.0f px selection to clipboard", rw, rh)
 }
 
+// Read the color of the image pixel under the cursor and copy its hex string
+// (e.g. "#3FA9F5") to the general pasteboard.
+copy_pixel_color :: proc "c" (mouse: CGPoint) {
+	if g_image == nil {
+		return
+	}
+	w := f64(CGImageGetWidth(g_image))
+	h := f64(CGImageGetHeight(g_image))
+
+	// Map screen point to top-left-origin image-pixel coords (mirrors update_coords).
+	a := g_flipped ? -g_scale : g_scale
+	cx := f64((mouse.x - g_offset.x) / a * g_backing_scale)
+	cy := f64((g_bounds.size.height - (mouse.y - g_offset.y) / g_scale) * g_backing_scale)
+	px := math.floor(cx)
+	py := math.floor(cy)
+	if px < 0 || py < 0 || px >= w || py >= h {
+		return
+	}
+
+	// Crop out the 1x1 pixel and draw it into an RGBA8 bitmap to read its bytes.
+	cropped := CGImageCreateWithImageInRect(g_image, CGRect{{CGFloat(px), CGFloat(py)}, {1, 1}})
+	if cropped == nil {
+		return
+	}
+	defer CGImageRelease(cropped)
+
+	pixel: [4]u8
+	space := CGColorSpaceCreateDeviceRGB()
+	defer CGColorSpaceRelease(space)
+	// kCGImageAlphaPremultipliedLast = 1
+	ctx := CGBitmapContextCreate(&pixel, 1, 1, 8, 4, space, 1)
+	if ctx == nil {
+		return
+	}
+	CGContextDrawImage(ctx, CGRect{{0, 0}, {1, 1}}, cropped)
+	CGContextRelease(ctx)
+
+	context = runtime.default_context()
+	hex := fmt.ctprintf("#%02X%02X%02X", pixel[0], pixel[1], pixel[2])
+
+	pb := msgSend(^NSPasteboard, NSPasteboard, "generalPasteboard")
+	msgSend(nil, pb, "clearContents")
+	ns_str := msgSend(^NS.String, NS.String, "stringWithUTF8String:", hex)
+	str_type := msgSend(^NS.String, NS.String, "stringWithUTF8String:", cstring("public.utf8-plain-text"))
+	msgSend(NS.BOOL, pb, "setString:forType:", ns_str, str_type)
+
+	fmt.printfln("[pick] copied color %s to clipboard", hex)
+}
+
 dismiss_handler :: proc "c" (user_data: rawptr, event: rawptr) {
 	app := msgSend(^NSApplication, NSApplication, "sharedApplication")
 	msgSend(nil, app, "terminate:", rawptr(nil))
@@ -597,6 +654,11 @@ tick :: proc "c" (user_data: rawptr, timer: rawptr) {
 	if copy && !g_copy_down && shift {
 		copy_selection()
 	}
+	// Without Shift, "c" copies the color of the pixel under the cursor.
+	if copy && !g_pick_down && !shift {
+		copy_pixel_color(loc)
+	}
+	g_pick_down = copy
 	g_copy_down = copy
 }
 
