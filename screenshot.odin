@@ -164,13 +164,14 @@ g_pan_last: CGPoint
 g_zero_down: bool // edge guard for the "0" reset key
 
 // Coordinate readout shown while Shift is held.
-g_coord_layer: ^CATextLayer
 g_img_height: CGFloat // captured image height in pixels, for top-left origin
 g_backing_scale: CGFloat = 1 // image pixels per point (2 on Retina)
 
 // Measurement anchor: image pixel under the cursor when Shift was pressed.
 g_measure_active: bool
 g_measure_anchor: CGPoint
+g_coord_layer: ^CATextLayer
+g_rect_layer: ^CAShapeLayer // outline of the dragged area while Shift held
 
 MIN_SCALE :: CGFloat(0.2)
 MAX_SCALE :: CGFloat(100)
@@ -350,6 +351,7 @@ update_coords :: proc "c" (mouse: CGPoint, visible: bool) {
 	if !visible {
 		g_measure_active = false
 		msgSend(nil, g_coord_layer, "setHidden:", NS.BOOL(true))
+		msgSend(nil, g_rect_layer, "setHidden:", NS.BOOL(true))
 		msgSend(nil, CATransaction, "commit")
 		return
 	}
@@ -382,6 +384,38 @@ update_coords :: proc "c" (mouse: CGPoint, visible: bool) {
 	fr := CGRect{{mouse.x + 16, mouse.y - 44}, {140, 40}}
 	msgSend(nil, g_coord_layer, "setFrame:", fr)
 	msgSend(nil, g_coord_layer, "setHidden:", NS.BOOL(false))
+
+	// Draw a rectangle snapped to whole image-pixel edges. The selection spans
+	// from the start pixel through the current pixel, both fully included.
+	a0 := g_measure_anchor
+	// Pixel index range (inclusive) on each axis.
+	px_lo := math.floor(f64(min(a0.x, cx)))
+	px_hi := math.floor(f64(max(a0.x, cx))) + 1 // +1 to include the far pixel's right edge
+	py_lo := math.floor(f64(min(a0.y, cy)))
+	py_hi := math.floor(f64(max(a0.y, cy))) + 1
+
+	// Map image-pixel coords back to screen space.
+	// screen.x = offset.x + a * px / backing ; screen.y = offset.y + (H - py/backing) * scale
+	sx :: proc "c" (px: f64) -> CGFloat {
+		a := g_flipped ? -g_scale : g_scale
+		return g_offset.x + a * CGFloat(px) / g_backing_scale
+	}
+	sy :: proc "c" (py: f64) -> CGFloat {
+		return g_offset.y + (g_bounds.size.height - CGFloat(py) / g_backing_scale) * g_scale
+	}
+	x0 := sx(px_lo)
+	x1 := sx(px_hi)
+	y0 := sy(py_lo)
+	y1 := sy(py_hi)
+	rx := min(x0, x1)
+	ry := min(y0, y1)
+	rw := abs(x1 - x0)
+	rh := abs(y1 - y0)
+	rect_path := CGPathCreateMutable()
+	CGPathAddRect(rect_path, nil, CGRect{{rx, ry}, {rw, rh}})
+	msgSend(nil, g_rect_layer, "setPath:", rect_path)
+	msgSend(nil, g_rect_layer, "setHidden:", NS.BOOL(false))
+	CGPathRelease(rect_path)
 
 	msgSend(nil, CATransaction, "commit")
 }
@@ -525,6 +559,20 @@ main :: proc() {
 	msgSend(nil, coord, "setHidden:", NS.BOOL(true))
 	g_coord_layer = coord
 
+	// Shape layer that outlines the dragged area while Shift is held.
+	rect := msgSend(^CAShapeLayer, CAShapeLayer, "alloc")
+	rect = msgSend(^CAShapeLayer, rect, "init")
+	msgSend(nil, rect, "setFrame:", g_bounds)
+	clear := CGColorCreateGenericRGB(0, 0, 0, 0)
+	msgSend(nil, rect, "setFillColor:", clear)
+	CGColorRelease(clear)
+	stroke := CGColorCreateGenericRGB(1, 0.3, 0.1, 1)
+	msgSend(nil, rect, "setStrokeColor:", stroke)
+	CGColorRelease(stroke)
+	msgSend(nil, rect, "setLineWidth:", CGFloat(2))
+	msgSend(nil, rect, "setHidden:", NS.BOOL(true))
+	g_rect_layer = rect
+
 	overlay_view := msgSend(^NSView, NSView, "alloc")
 	overlay_view = msgSend(^NSView, overlay_view, "initWithFrame:", frame)
 	// Plain backing layer that hosts BOTH the spotlight shape layer and the
@@ -533,6 +581,7 @@ main :: proc() {
 	msgSend(nil, overlay_view, "setWantsLayer:", NS.BOOL(true))
 	host := msgSend(^CALayer, overlay_view, "layer")
 	msgSend(nil, host, "addSublayer:", overlay)
+	msgSend(nil, host, "addSublayer:", rect)
 	msgSend(nil, host, "addSublayer:", coord)
 
 	// Container hosts the single content layer whose `contents` is the capture.
