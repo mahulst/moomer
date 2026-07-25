@@ -10,18 +10,19 @@ presenting.
 ## Demo
 <video src="https://github.com/user-attachments/assets/4a9256ab-eaa0-4dbf-9f75-21b698579e11" controls width="100%"></video>
 
-## Download
+## Install
 
-Grab the latest macOS build from the
-[Releases](https://github.com/mahulst/moomer/releases/latest) page
-(`moomer` binary or `moomer-<version>-macos.tar.gz`).
+Download `Moomer-<version>-macos.dmg` from the
+[Releases](https://github.com/mahulst/moomer/releases/latest) page, open it,
+and drag **Moomer** into your **Applications** folder.
 
-```sh
-# make it executable and run
-chmod +x moomer
-xattr -d com.apple.quarantine moomer   # clear Gatekeeper quarantine if needed
-./moomer
-```
+The app is signed with a Developer ID and notarized by Apple, so it launches
+without any Gatekeeper warnings — no `xattr` workaround needed.
+
+Moomer runs as a menu-bar app (no Dock icon). Click the cow icon in the menu
+bar, or press the global hotkey **⌘⇧8**, to capture the screen. On first use
+macOS will ask for **Screen Recording** permission — grant it, then trigger
+the capture again.
 
 ## Controls
 
@@ -39,9 +40,21 @@ xattr -d com.apple.quarantine moomer   # clear Gatekeeper quarantine if needed
 
 ## Build & run
 
+Build and run the bare capture tool directly:
+
 ```sh
 odin build . -out:moomer && ./moomer
 ```
+
+Or build the full menu-bar app bundle (launcher + capture tool):
+
+```sh
+./build_app.sh            # builds dist/Moomer.app (ad-hoc signed)
+./build_app.sh install    # also copies it to /Applications
+```
+
+Releases are produced by CI, which signs the bundle with a Developer ID,
+notarizes it, and packages it as a DMG.
 
 ## Permissions
 
@@ -50,8 +63,10 @@ process (System Settings → Privacy & Security → Screen Recording).
 
 ## Hotkey with skhd
 
-Bind a global shortcut with [skhd](https://github.com/koekeishiya/skhd) by
-adding this to `~/.config/skhd/skhdrc`:
+The `.app` already binds a global **⌘⇧8** hotkey via its menu-bar launcher. If
+you instead run the bare `moomer` binary, you can bind your own shortcut with
+[skhd](https://github.com/koekeishiya/skhd) by adding this to
+`~/.config/skhd/skhdrc`:
 
 ```
 # Launch moomer screen annotation (Cmd + Option + S)

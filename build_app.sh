@@ -5,7 +5,7 @@
 #   ./build_app.sh install      # also copy it to /Applications
 #
 # The launcher lives in Contents/MacOS/moomer-launcher and owns the menu-bar
-# icon + Cmd+Shift+2 global hotkey. The capture binary sits beside it as
+# icon + Cmd+Shift+8 global hotkey. The capture binary sits beside it as
 # Contents/MacOS/moomer and is spawned fresh on every trigger.
 
 set -e

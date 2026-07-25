@@ -72,6 +72,23 @@ jobs:
           xcrun stapler staple "dist/Moomer.app"
           xcrun stapler validate "dist/Moomer.app"
 
+      - name: Notarize standalone binary
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          # build_app.sh already produced and Developer ID-signed ./moomer.
+          # Notarize it too so the CLI binary isn't a Gatekeeper trap.
+          # A bare Mach-O can't be stapled, but notarization is recorded
+          # against its signature and verified online on first launch.
+          ditto -c -k "moomer" "$RUNNER_TEMP/moomer-bin.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/moomer-bin.zip" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+
       - name: Package DMG
         run: |
           VERSION="${GITHUB_REF_NAME}"
@@ -90,6 +107,11 @@ jobs:
           codesign --force --sign "$SIGN_ID" "$DMG"
           shasum -a 256 "$DMG" > "$DMG.sha256"
 
+          # Standalone signed + notarized capture binary, for CLI use
+          # without the menu-bar launcher.
+          tar -czf "moomer-${VERSION}-macos.tar.gz" moomer README.md
+          shasum -a 256 "moomer-${VERSION}-macos.tar.gz" > "moomer-${VERSION}-macos.tar.gz.sha256"
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -98,3 +120,6 @@ jobs:
           files: |
             Moomer-${{ github.ref_name }}-macos.dmg
             Moomer-${{ github.ref_name }}-macos.dmg.sha256
+            moomer
+            moomer-${{ github.ref_name }}-macos.tar.gz
+            moomer-${{ github.ref_name }}-macos.tar.gz.sha256
