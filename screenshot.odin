@@ -34,6 +34,7 @@ foreign CoreGraphics {
 	CGImageRelease :: proc "c" (image: CGImageRef) ---
 	CGImageGetWidth :: proc "c" (image: CGImageRef) -> uint ---
 	CGImageGetHeight :: proc "c" (image: CGImageRef) -> uint ---
+	CGImageCreateWithImageInRect :: proc "c" (image: CGImageRef, rect: CGRect) -> CGImageRef ---
 
 	CGPathCreateMutable :: proc "c" () -> CGMutablePathRef ---
 	CGPathAddRect :: proc "c" (path: CGMutablePathRef, m: rawptr, rect: CGRect) ---
@@ -67,6 +68,16 @@ NSImage :: struct {
 
 @(objc_class = "NSImageView")
 NSImageView :: struct {
+	using _: NS.Object,
+}
+
+@(objc_class = "NSPasteboard")
+NSPasteboard :: struct {
+	using _: NS.Object,
+}
+
+@(objc_class = "NSBitmapImageRep")
+NSBitmapImageRep :: struct {
 	using _: NS.Object,
 }
 
@@ -136,6 +147,7 @@ kVK_Option :: u16(0x3A)
 kVK_RightOption :: u16(0x3D)
 kVK_Shift :: u16(0x38)
 kVK_RightShift :: u16(0x3C)
+kVK_ANSI_C :: u16(0x08)
 kCGEventSourceStateCombined :: i32(0)
 kCGMouseButtonLeft :: u32(0)
 
@@ -173,6 +185,13 @@ g_measure_anchor: CGPoint
 g_coord_layer: ^CALayer     // dark background box
 g_coord_text: ^CATextLayer  // the readout text inside the box
 g_rect_layer: ^CAShapeLayer // outline of the dragged area while Shift held
+
+// Full-resolution captured image, kept so a Shift selection can be cropped and
+// copied to the clipboard. Selection bounds are in image-pixel space with a
+// top-left origin (px_lo/py_lo inclusive, px_hi/py_hi exclusive edges).
+g_image: CGImageRef
+g_sel_px_lo, g_sel_px_hi, g_sel_py_lo, g_sel_py_hi: f64
+g_copy_down: bool
 
 MIN_SCALE :: CGFloat(0.2)
 MAX_SCALE :: CGFloat(100)
@@ -410,6 +429,12 @@ update_coords :: proc "c" (mouse: CGPoint, visible: bool) {
 	py_lo := math.floor(f64(min(a0.y, cy)))
 	py_hi := math.floor(f64(max(a0.y, cy))) + 1
 
+	// Remember the current selection so a right-Shift release can crop+copy it.
+	g_sel_px_lo = px_lo
+	g_sel_px_hi = px_hi
+	g_sel_py_lo = py_lo
+	g_sel_py_hi = py_hi
+
 	// Map image-pixel coords back to screen space.
 	// screen.x = offset.x + a * px / backing ; screen.y = offset.y + (H - py/backing) * scale
 	sx :: proc "c" (px: f64) -> CGFloat {
@@ -434,6 +459,64 @@ update_coords :: proc "c" (mouse: CGPoint, visible: bool) {
 	CGPathRelease(rect_path)
 
 	msgSend(nil, CATransaction, "commit")
+}
+
+// Crop the current Shift selection out of the captured image and place it on
+// the general pasteboard as a bitmap-backed NSImage.
+copy_selection :: proc "c" () {
+	if g_image == nil {
+		return
+	}
+	w := f64(CGImageGetWidth(g_image))
+	h := f64(CGImageGetHeight(g_image))
+
+	// Clamp to image bounds. CGImage rect origin is top-left, matching the
+	// selection's stored top-left pixel space.
+	x0 := math.clamp(g_sel_px_lo, 0, w)
+	x1 := math.clamp(g_sel_px_hi, 0, w)
+	y0 := math.clamp(g_sel_py_lo, 0, h)
+	y1 := math.clamp(g_sel_py_hi, 0, h)
+	rw := x1 - x0
+	rh := y1 - y0
+	if rw < 1 || rh < 1 {
+		return
+	}
+
+	rect := CGRect{{CGFloat(x0), CGFloat(y0)}, {CGFloat(rw), CGFloat(rh)}}
+	cropped := CGImageCreateWithImageInRect(g_image, rect)
+	if cropped == nil {
+		return
+	}
+	defer CGImageRelease(cropped)
+
+	rep := msgSend(^NSBitmapImageRep, NSBitmapImageRep, "alloc")
+	rep = msgSend(^NSBitmapImageRep, rep, "initWithCGImage:", cropped)
+	if rep == nil {
+		return
+	}
+
+	// Encode the bitmap as PNG data. NSBitmapImageFileTypePNG = 4.
+	NSBitmapImageFileTypePNG :: NS.UInteger(4)
+	empty := msgSend(^NS.Dictionary, NS.Dictionary, "dictionary")
+	png := msgSend(
+		^NS.Data,
+		rep,
+		"representationUsingType:properties:",
+		NSBitmapImageFileTypePNG,
+		empty,
+	)
+	if png == nil {
+		return
+	}
+
+	// Write the PNG bytes to the general pasteboard under the PNG UTI.
+	pb := msgSend(^NSPasteboard, NSPasteboard, "generalPasteboard")
+	msgSend(nil, pb, "clearContents")
+	png_type := msgSend(^NS.String, NS.String, "stringWithUTF8String:", cstring("public.png"))
+	msgSend(NS.BOOL, pb, "setData:forType:", png, png_type)
+
+	context = runtime.default_context()
+	fmt.printfln("[shift] copied %.0fx%.0f px selection to clipboard", rw, rh)
 }
 
 dismiss_handler :: proc "c" (user_data: rawptr, event: rawptr) {
@@ -502,11 +585,19 @@ tick :: proc "c" (user_data: rawptr, timer: rawptr) {
 
 	update_spotlight(loc, ctrl)
 
-	// Shift shows the real pixel coordinates under the cursor.
-	shift :=
-		bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_Shift)) ||
-		bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_RightShift))
+	// Shift shows the real pixel coordinates under the cursor. Pressing "c"
+	// while a selection is active copies that selection to the clipboard.
+	left_shift := bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_Shift))
+	right_shift := bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_RightShift))
+	shift := left_shift || right_shift
 	update_coords(loc, shift)
+
+	// On the "c" press edge, crop+copy the current selection.
+	copy := bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_ANSI_C))
+	if copy && !g_copy_down && shift {
+		copy_selection()
+	}
+	g_copy_down = copy
 }
 
 main :: proc() {
@@ -517,6 +608,7 @@ main :: proc() {
 		os.exit(1)
 	}
 	bounds := CGDisplayBounds(display)
+	g_image = image
 
 	// NSApplication *app = [NSApplication sharedApplication];
 	app := msgSend(^NSApplication, NSApplication, "sharedApplication")
@@ -675,7 +767,8 @@ main :: proc() {
 	run_loop := msgSend(^NSRunLoop, NSRunLoop, "mainRunLoop")
 	msgSend(nil, run_loop, "addTimer:forMode:", timer, NS.AT("kCFRunLoopCommonModes"))
 
-	CGImageRelease(image)
+	// Note: g_image is intentionally not released here; it is retained by the
+	// content layer and reused to crop the Shift selection onto the clipboard.
 
 	msgSend(nil, app, "run")
 }
