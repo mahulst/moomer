@@ -170,7 +170,8 @@ g_backing_scale: CGFloat = 1 // image pixels per point (2 on Retina)
 // Measurement anchor: image pixel under the cursor when Shift was pressed.
 g_measure_active: bool
 g_measure_anchor: CGPoint
-g_coord_layer: ^CATextLayer
+g_coord_layer: ^CALayer     // dark background box
+g_coord_text: ^CATextLayer  // the readout text inside the box
 g_rect_layer: ^CAShapeLayer // outline of the dragged area while Shift held
 
 MIN_SCALE :: CGFloat(0.2)
@@ -378,11 +379,26 @@ update_coords :: proc "c" (mouse: CGPoint, visible: bool) {
 	context = runtime.default_context()
 	str := fmt.ctprintf("x: %dpx\ny: %dpx", dx, dy)
 	ns_str := msgSend(^NS.String, NS.String, "stringWithUTF8String:", str)
-	msgSend(nil, g_coord_layer, "setString:", ns_str)
+	msgSend(nil, g_coord_text, "setString:", ns_str)
 
-	// Position the text below-right of the cursor.
-	fr := CGRect{{mouse.x + 16, mouse.y - 44}, {140, 40}}
+	// Size the box snugly around the text, with a bit of padding.
+	PAD :: CGFloat(6)
+	FONT :: CGFloat(16)
+	line_h := FONT * 1.25
+	// Longest line's character count drives the width (monospace estimate).
+	nx := len(fmt.tprintf("x: %dpx", dx))
+	ny := len(fmt.tprintf("y: %dpx", dy))
+	cols := CGFloat(max(nx, ny))
+	text_w := cols * FONT * 0.6
+	text_h := line_h * 2
+	box_w := text_w + PAD * 2
+	box_h := text_h + PAD * 2
+
+	// Position the box below-right of the cursor.
+	fr := CGRect{{mouse.x + 16, mouse.y - box_h - 8}, {box_w, box_h}}
 	msgSend(nil, g_coord_layer, "setFrame:", fr)
+	// Text sits inset by the padding within the box.
+	msgSend(nil, g_coord_text, "setFrame:", CGRect{{PAD, PAD}, {text_w, text_h}})
 	msgSend(nil, g_coord_layer, "setHidden:", NS.BOOL(false))
 
 	// Draw a rectangle snapped to whole image-pixel edges. The selection spans
@@ -546,9 +562,19 @@ main :: proc() {
 	msgSend(nil, overlay, "setHidden:", NS.BOOL(true))
 	g_overlay = overlay
 
-	// Text layer for the pixel-coordinate readout (hidden until Shift held).
+	// Dark rounded background box hosting the readout text, so the white text
+	// is readable on any background (including white).
 	g_img_height = CGFloat(CGImageGetHeight(image))
 	g_backing_scale = g_img_height / g_bounds.size.height
+	box := msgSend(^CALayer, CALayer, "alloc")
+	box = msgSend(^CALayer, box, "init")
+	bg := CGColorCreateGenericRGB(0, 0, 0, 0.7)
+	msgSend(nil, box, "setBackgroundColor:", bg)
+	CGColorRelease(bg)
+	msgSend(nil, box, "setCornerRadius:", CGFloat(4))
+	msgSend(nil, box, "setHidden:", NS.BOOL(true))
+	g_coord_layer = box
+
 	coord := msgSend(^CATextLayer, CATextLayer, "alloc")
 	coord = msgSend(^CATextLayer, coord, "init")
 	msgSend(nil, coord, "setFontSize:", CGFloat(16))
@@ -556,8 +582,8 @@ main :: proc() {
 	msgSend(nil, coord, "setForegroundColor:", white)
 	CGColorRelease(white)
 	msgSend(nil, coord, "setWrapped:", NS.BOOL(true))
-	msgSend(nil, coord, "setHidden:", NS.BOOL(true))
-	g_coord_layer = coord
+	msgSend(nil, box, "addSublayer:", coord)
+	g_coord_text = coord
 
 	// Shape layer that outlines the dragged area while Shift is held.
 	rect := msgSend(^CAShapeLayer, CAShapeLayer, "alloc")
@@ -582,7 +608,7 @@ main :: proc() {
 	host := msgSend(^CALayer, overlay_view, "layer")
 	msgSend(nil, host, "addSublayer:", overlay)
 	msgSend(nil, host, "addSublayer:", rect)
-	msgSend(nil, host, "addSublayer:", coord)
+	msgSend(nil, host, "addSublayer:", box)
 
 	// Container hosts the single content layer whose `contents` is the capture.
 	container := msgSend(^NSView, NSView, "alloc")
