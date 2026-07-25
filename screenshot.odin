@@ -581,6 +581,7 @@ main :: proc() {
 	white := CGColorCreateGenericRGB(1, 1, 1, 1)
 	msgSend(nil, coord, "setForegroundColor:", white)
 	CGColorRelease(white)
+	msgSend(nil, coord, "setAlignmentMode:", NS.AT("center"))
 	msgSend(nil, coord, "setWrapped:", NS.BOOL(true))
 	msgSend(nil, box, "addSublayer:", coord)
 	g_coord_text = coord
