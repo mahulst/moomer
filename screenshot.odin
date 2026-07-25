@@ -31,6 +31,8 @@ foreign CoreGraphics {
 	CGDisplayCreateImage :: proc "c" (display: CGDirectDisplayID) -> CGImageRef ---
 	CGDisplayBounds :: proc "c" (display: CGDirectDisplayID) -> CGRect ---
 	CGImageRelease :: proc "c" (image: CGImageRef) ---
+	CGImageGetWidth :: proc "c" (image: CGImageRef) -> uint ---
+	CGImageGetHeight :: proc "c" (image: CGImageRef) -> uint ---
 
 	CGPathCreateMutable :: proc "c" () -> CGMutablePathRef ---
 	CGPathAddRect :: proc "c" (path: CGMutablePathRef, m: rawptr, rect: CGRect) ---
@@ -419,23 +421,14 @@ main :: proc() {
 	msgSend(nil, win, "setOpaque:", NS.BOOL(true))
 	msgSend(nil, win, "setAcceptsMouseMovedEvents:", NS.BOOL(true))
 
-	// NSImageView *view = [[NSImageView alloc] initWithFrame:frame];
 	frame := CGRect{{0, 0}, {bounds.size.width, bounds.size.height}}
-	view := msgSend(^NSImageView, NSImageView, "alloc")
-	view = msgSend(^NSImageView, view, "initWithFrame:", frame)
 
-	// NSImage *img = [[NSImage alloc] initWithCGImage:image size:NSZeroSize];
-	nsimg := msgSend(^NSImage, NSImage, "alloc")
-	nsimg = msgSend(^NSImage, nsimg, "initWithCGImage:size:", image, CGSize{0, 0})
-
-	msgSend(nil, view, "setImage:", nsimg)
-	msgSend(nil, view, "setImageScaling:", NSImageScaleAxesIndependently)
-	// Layer-back the image view and use nearest-neighbour so the screenshot
-	// isn't bilinear-smoothed when the zoom transform enlarges it.
-	msgSend(nil, view, "setWantsLayer:", NS.BOOL(true))
-	img_layer := msgSend(^CALayer, view, "layer")
-	msgSend(nil, img_layer, "setMagnificationFilter:", NS.AT("nearest"))
-	msgSend(nil, img_layer, "setMinificationFilter:", NS.AT("nearest"))
+	// The zoomable content is a single CALayer whose `contents` is the captured
+	// CGImage. Using one layer (instead of an NSImageView nested inside the
+	// transformed container) means there is no parent/child compositing step to
+	// re-sample and smooth the pixels — the nearest-neighbour magnification
+	// filter on this one layer is authoritative when the zoom transform enlarges
+	// it, so zoomed-in pixels stay crisp squares.
 
 	// Dimming overlay lives in its own layer-hosting NSView placed above the
 	// image view. NSImageView manages its own backing layer, so adding a
@@ -458,13 +451,15 @@ main :: proc() {
 	msgSend(nil, overlay_view, "setLayer:", overlay)
 	msgSend(nil, overlay_view, "setWantsLayer:", NS.BOOL(true))
 
-	// Container holds only the (zoomable) image view.
+	// Container hosts the single content layer whose `contents` is the capture.
 	container := msgSend(^NSView, NSView, "alloc")
 	container = msgSend(^NSView, container, "initWithFrame:", frame)
-	msgSend(nil, container, "addSubview:", view)
 	// Make the container layer-backed so we can transform its layer for zoom.
 	msgSend(nil, container, "setWantsLayer:", NS.BOOL(true))
 	content_layer := msgSend(^CALayer, container, "layer")
+	// Put the full-resolution CGImage directly on the layer. CoreAnimation maps
+	// its native pixels across the layer bounds; no NSImageView resample step.
+	msgSend(nil, content_layer, "setContents:", image)
 	// Anchor at bottom-left origin so our transform math (matching
 	// NSEvent.mouseLocation) applies directly.
 	msgSend(nil, content_layer, "setAnchorPoint:", CGPoint{0, 0})
