@@ -14,6 +14,11 @@ border, no animation). While the overlay is up:
   original, shown centered on the dimmed background) up to 100x.
 - **Click & drag** — pans the zoomed image around.
 - **Option** — toggles a horizontal mirror flip about the cursor.
+- **Hold Shift** — shows a label below-right of the cursor measuring how far the
+  mouse has moved, in real image pixels, since Shift was pressed. It counts
+  pixel-border crossings (press anywhere inside a pixel, then each pixel the
+  cursor moves adds 1) and is Retina-aware, so the count is in true captured
+  image pixels regardless of zoom level.
 - **Press 0** — resets zoom, pan, and flip to the original view.
 - **Press Esc** — dismisses the overlay and quits.
 
