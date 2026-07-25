@@ -19,8 +19,7 @@ jobs:
         uses: laytan/setup-odin@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          # nightly ships core:os/os2, which the launcher uses.
-          release: nightly
+          release: latest
 
       - name: Build .app bundle
         run: ./build_app.sh

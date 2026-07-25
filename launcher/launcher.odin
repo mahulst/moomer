@@ -6,14 +6,29 @@ package main
 // tool itself is left completely untouched (see ../screenshot.odin).
 
 import "core:fmt"
-import "core:os"
-import os2 "core:os/os2"
-import "core:path/filepath"
+import "core:strings"
 import "base:intrinsics"
+import "base:runtime"
 import NS "core:sys/darwin/Foundation"
 
 foreign import AppKit "system:AppKit.framework"
 foreign import Carbon "system:Carbon.framework"
+foreign import libc "system:System.framework"
+
+// libSystem/libc bits we need, imported directly so the launcher builds on
+// any Odin toolchain (no dependency on the newer core:os/os2 package).
+@(default_calling_convention = "c")
+foreign libc {
+	// Run a shell command; returns after it's launched when we background it.
+	system :: proc(command: cstring) -> i32 ---
+	// Fills buf with the running executable's path. On input *size is the
+	// buffer size; returns 0 on success, -1 if the buffer was too small.
+	_NSGetExecutablePath :: proc(buf: [^]u8, size: ^u32) -> i32 ---
+	// access(path, F_OK) == 0 when the path exists.
+	access :: proc(path: cstring, mode: i32) -> i32 ---
+}
+
+F_OK :: i32(0)
 
 msgSend :: intrinsics.objc_send
 
@@ -84,16 +99,19 @@ g_moomer_path: string
 
 // Spawn the capture tool as a detached subprocess. Each invocation grabs a
 // fresh screenshot and shows its own overlay; it quits itself on Esc.
+// Backgrounded (trailing &) so system() returns immediately and the menu-bar
+// app stays responsive while the overlay is up.
 spawn_moomer :: proc() {
 	if g_moomer_path == "" {
 		fmt.eprintln("moomer binary not found")
 		return
 	}
-	_, err := os2.process_start({
-		command = {g_moomer_path},
-	})
-	if err != nil {
-		fmt.eprintfln("failed to launch moomer: %v", err)
+	// Single-quote the path (escaping any embedded quotes) so paths with
+	// spaces work, then background it.
+	quoted, _ := strings.replace_all(g_moomer_path, "'", `'\''`)
+	cmd := fmt.ctprintf("'%s' &", quoted)
+	if system(cmd) != 0 {
+		fmt.eprintln("failed to launch moomer")
 	}
 }
 
@@ -120,8 +138,6 @@ hotkey_handler :: proc "c" (next: EventHandlerCallRef, event: EventRef, userData
 
 g_ctx: runtime_context
 
-// Alias so the "c" callbacks can restore an Odin context.
-import "base:runtime"
 runtime_context :: runtime.Context
 
 // Build "MoomerTarget", an NSObject subclass exposing capture:/quit:, and
@@ -145,23 +161,47 @@ nsstr :: proc(s: cstring) -> ^NS.String {
 	return msgSend(^NS.String, NS.String, "stringWithUTF8String:", s)
 }
 
+// Absolute path of this running launcher executable, via libSystem.
+exe_path :: proc() -> string {
+	buf: [4096]u8
+	size := u32(len(buf))
+	if _NSGetExecutablePath(&buf[0], &size) != 0 {
+		return ""
+	}
+	return strings.clone_from_cstring(cstring(&buf[0]))
+}
+
+// Directory portion of a path (everything before the last '/').
+dir_of :: proc(path: string) -> string {
+	i := strings.last_index_byte(path, '/')
+	if i < 0 {
+		return "."
+	}
+	return path[:i]
+}
+
+file_exists :: proc(path: string) -> bool {
+	c := strings.clone_to_cstring(path, context.temp_allocator)
+	return access(c, F_OK) == 0
+}
+
 // Locate the menu-bar icon PNG. Inside the .app it's copied to
 // Contents/Resources/menubar-icon.png (a sibling of MacOS/); during a plain
-// side-by-side dev build it's the black template at icons/cow-icon-light-32.png.
+// side-by-side dev build it's the black template at icons/cow-icon-light-64.png.
 resolve_icon_path :: proc() -> (string, bool) {
-	exe, err := os2.get_executable_path(context.allocator)
-	if err != nil {
+	exe := exe_path()
+	if exe == "" {
 		return "", false
 	}
-	macos_dir := filepath.dir(exe) // .../Contents/MacOS  or  repo root
+	macos_dir := dir_of(exe) // .../Contents/MacOS  or  repo root
 	// Bundle layout: ../Resources/menubar-icon.png
-	bundle_icon := filepath.join({filepath.dir(macos_dir), "Resources", "menubar-icon.png"})
-	if os.exists(bundle_icon) {
+	bundle_icon := fmt.tprintf("%s/Resources/menubar-icon.png", dir_of(macos_dir))
+	if file_exists(bundle_icon) {
 		return bundle_icon, true
 	}
 	// Dev layout: icons/ beside the launcher binary's project root.
-	dev_icon := filepath.join({macos_dir, "icons", "cow-icon-light-32.png"})
-	if os.exists(dev_icon) {
+	dev_icon := fmt.tprintf("%s/icons/cow-icon-light-64.png", macos_dir)
+	if file_exists(dev_icon) {
 		return dev_icon, true
 	}
 	return "", false
@@ -192,11 +232,10 @@ set_status_icon :: proc(button: ^NSStatusBarButton) {
 // (works both for `Contents/MacOS/moomer` inside the .app bundle and for a
 // plain side-by-side build), then fall back to PATH-relative "moomer".
 resolve_moomer_path :: proc() -> string {
-	exe, err := os2.get_executable_path(context.allocator)
-	if err == nil {
-		dir := filepath.dir(exe)
-		cand := filepath.join({dir, "moomer"})
-		if os.exists(cand) {
+	exe := exe_path()
+	if exe != "" {
+		cand := fmt.aprintf("%s/moomer", dir_of(exe))
+		if file_exists(cand) {
 			return cand
 		}
 	}
