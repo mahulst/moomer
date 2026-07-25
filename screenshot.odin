@@ -155,6 +155,7 @@ kVK_RightOption :: u16(0x3D)
 kVK_Shift :: u16(0x38)
 kVK_RightShift :: u16(0x3C)
 kVK_ANSI_C :: u16(0x08)
+kVK_ANSI_G :: u16(0x05)
 kCGEventSourceStateCombined :: i32(0)
 kCGMouseButtonLeft :: u32(0)
 
@@ -192,6 +193,9 @@ g_measure_anchor: CGPoint
 g_coord_layer: ^CALayer     // dark background box
 g_coord_text: ^CATextLayer  // the readout text inside the box
 g_rect_layer: ^CAShapeLayer // outline of the dragged area while Shift held
+g_grid_layer: ^CAShapeLayer // pixel-edge grid, toggled by "g"
+g_grid_on: bool             // whether the grid is currently enabled
+g_grid_down: bool           // edge guard for the "g" toggle key
 
 // Full-resolution captured image, kept so a Shift selection can be cropped and
 // copied to the clipboard. Selection bounds are in image-pixel space with a
@@ -469,6 +473,63 @@ update_coords :: proc "c" (mouse: CGPoint, visible: bool) {
 	msgSend(nil, CATransaction, "commit")
 }
 
+// Draw thin grid lines on image-pixel edges, but only when zoom makes each
+// pixel large enough on screen to be worth outlining. Lines are computed in
+// screen space and clipped to the visible bounds; toggled by "g".
+update_grid :: proc "c" () {
+	msgSend(nil, CATransaction, "begin")
+	msgSend(nil, CATransaction, "setDisableActions:", NS.BOOL(true))
+
+	// Points on screen occupied by one image pixel: |a|*(1/backing).
+	step := f64(g_scale / g_backing_scale)
+	// Below this, lines would crowd together into a solid grey wash.
+	MIN_PIXEL_POINTS :: 8.0
+	if !g_grid_on || step < MIN_PIXEL_POINTS {
+		msgSend(nil, g_grid_layer, "setHidden:", NS.BOOL(true))
+		msgSend(nil, CATransaction, "commit")
+		return
+	}
+
+	w := f64(g_bounds.size.width)
+	h := f64(g_bounds.size.height)
+	ax := f64(g_flipped ? -g_scale : g_scale)
+	off_x := f64(g_offset.x)
+	off_y := f64(g_offset.y)
+	iw := f64(CGImageGetWidth(g_image))
+	ih := f64(CGImageGetHeight(g_image))
+	backing := f64(g_backing_scale)
+
+	// screen.x = off_x + ax*px/backing ; screen.y = off_y + (H - py/backing)*scale
+	sx :: proc "c" (px, ax, off_x, backing: f64) -> f64 {
+		return off_x + ax * px / backing
+	}
+
+	path := CGPathCreateMutable()
+
+	// Vertical lines at every image-pixel column edge visible on screen.
+	for px := 0.0; px <= iw; px += 1 {
+		x := sx(px, ax, off_x, backing)
+		if x < 0 || x > w {
+			continue
+		}
+		CGPathAddRect(path, nil, CGRect{{CGFloat(x), 0}, {0, CGFloat(h)}})
+	}
+	// Horizontal lines at every image-pixel row edge visible on screen.
+	for py := 0.0; py <= ih; py += 1 {
+		y := off_y + (h - py / backing) * f64(g_scale)
+		if y < 0 || y > h {
+			continue
+		}
+		CGPathAddRect(path, nil, CGRect{{0, CGFloat(y)}, {CGFloat(w), 0}})
+	}
+
+	msgSend(nil, g_grid_layer, "setPath:", path)
+	msgSend(nil, g_grid_layer, "setHidden:", NS.BOOL(false))
+	CGPathRelease(path)
+
+	msgSend(nil, CATransaction, "commit")
+}
+
 // Crop the current Shift selection out of the captured image and place it on
 // the general pasteboard as a bitmap-backed NSImage.
 copy_selection :: proc "c" () {
@@ -660,6 +721,15 @@ tick :: proc "c" (user_data: rawptr, timer: rawptr) {
 	}
 	g_pick_down = copy
 	g_copy_down = copy
+
+	// "g" toggles the pixel-edge grid (press edge). It's redrawn every frame so
+	// it tracks zoom/pan changes.
+	grid := bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_ANSI_G))
+	if grid && !g_grid_down {
+		g_grid_on = !g_grid_on
+	}
+	g_grid_down = grid
+	update_grid()
 }
 
 main :: proc() {
@@ -754,6 +824,20 @@ main :: proc() {
 	msgSend(nil, rect, "setHidden:", NS.BOOL(true))
 	g_rect_layer = rect
 
+	// Shape layer that draws the thin light-grey pixel-edge grid.
+	grid := msgSend(^CAShapeLayer, CAShapeLayer, "alloc")
+	grid = msgSend(^CAShapeLayer, grid, "init")
+	msgSend(nil, grid, "setFrame:", g_bounds)
+	grid_clear := CGColorCreateGenericRGB(0, 0, 0, 0)
+	msgSend(nil, grid, "setFillColor:", grid_clear)
+	CGColorRelease(grid_clear)
+	grid_stroke := CGColorCreateGenericRGB(0.8, 0.8, 0.8, 0.5)
+	msgSend(nil, grid, "setStrokeColor:", grid_stroke)
+	CGColorRelease(grid_stroke)
+	msgSend(nil, grid, "setLineWidth:", CGFloat(1))
+	msgSend(nil, grid, "setHidden:", NS.BOOL(true))
+	g_grid_layer = grid
+
 	overlay_view := msgSend(^NSView, NSView, "alloc")
 	overlay_view = msgSend(^NSView, overlay_view, "initWithFrame:", frame)
 	// Plain backing layer that hosts BOTH the spotlight shape layer and the
@@ -762,6 +846,7 @@ main :: proc() {
 	msgSend(nil, overlay_view, "setWantsLayer:", NS.BOOL(true))
 	host := msgSend(^CALayer, overlay_view, "layer")
 	msgSend(nil, host, "addSublayer:", overlay)
+	msgSend(nil, host, "addSublayer:", grid)
 	msgSend(nil, host, "addSublayer:", rect)
 	msgSend(nil, host, "addSublayer:", box)
 
