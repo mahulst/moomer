@@ -165,6 +165,7 @@ MAX_RADIUS :: CGFloat(600)
 
 // Globals used by the event handlers.
 g_overlay: ^CAShapeLayer // the dimming layer
+g_spot_ring: ^CAShapeLayer // faint outline around the spotlight circle
 g_bounds: CGRect
 g_ctrl_down: bool
 
@@ -353,6 +354,7 @@ update_spotlight :: proc "c" (mouse: CGPoint, visible: bool) {
 
 	if !visible {
 		msgSend(nil, g_overlay, "setHidden:", NS.BOOL(true))
+		msgSend(nil, g_spot_ring, "setHidden:", NS.BOOL(true))
 		msgSend(nil, CATransaction, "commit")
 		return
 	}
@@ -370,6 +372,13 @@ update_spotlight :: proc "c" (mouse: CGPoint, visible: bool) {
 
 	msgSend(nil, g_overlay, "setPath:", path)
 	msgSend(nil, g_overlay, "setHidden:", NS.BOOL(false))
+
+	// Outline just the spotlight circle.
+	ring_path := CGPathCreateMutable()
+	CGPathAddEllipseInRect(ring_path, nil, circle)
+	msgSend(nil, g_spot_ring, "setPath:", ring_path)
+	msgSend(nil, g_spot_ring, "setHidden:", NS.BOOL(false))
+	CGPathRelease(ring_path)
 	CGPathRelease(path)
 
 	msgSend(nil, CATransaction, "commit")
@@ -786,6 +795,21 @@ main :: proc() {
 	msgSend(nil, overlay, "setHidden:", NS.BOOL(true))
 	g_overlay = overlay
 
+	// Faint outline stroked only around the spotlight circle, so the highlight
+	// stays visible on a completely black background.
+	spot_ring := msgSend(^CAShapeLayer, CAShapeLayer, "alloc")
+	spot_ring = msgSend(^CAShapeLayer, spot_ring, "init")
+	msgSend(nil, spot_ring, "setFrame:", g_bounds)
+	ring_clear := CGColorCreateGenericRGB(0, 0, 0, 0)
+	msgSend(nil, spot_ring, "setFillColor:", ring_clear)
+	CGColorRelease(ring_clear)
+	ring_stroke := CGColorCreateGenericRGB(1, 1, 1, 0.18)
+	msgSend(nil, spot_ring, "setStrokeColor:", ring_stroke)
+	CGColorRelease(ring_stroke)
+	msgSend(nil, spot_ring, "setLineWidth:", CGFloat(1))
+	msgSend(nil, spot_ring, "setHidden:", NS.BOOL(true))
+	g_spot_ring = spot_ring
+
 	// Dark rounded background box hosting the readout text, so the white text
 	// is readable on any background (including white).
 	g_img_height = CGFloat(CGImageGetHeight(image))
@@ -846,6 +870,7 @@ main :: proc() {
 	msgSend(nil, overlay_view, "setWantsLayer:", NS.BOOL(true))
 	host := msgSend(^CALayer, overlay_view, "layer")
 	msgSend(nil, host, "addSublayer:", overlay)
+	msgSend(nil, host, "addSublayer:", spot_ring)
 	msgSend(nil, host, "addSublayer:", grid)
 	msgSend(nil, host, "addSublayer:", rect)
 	msgSend(nil, host, "addSublayer:", box)
