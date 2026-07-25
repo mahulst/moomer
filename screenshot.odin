@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:math"
 import "core:os"
 import "base:intrinsics"
 import "base:runtime"
@@ -84,6 +85,11 @@ CAShapeLayer :: struct {
 	using _: NS.Object,
 }
 
+@(objc_class = "CATextLayer")
+CATextLayer :: struct {
+	using _: NS.Object,
+}
+
 @(objc_class = "CALayer")
 CALayer :: struct {
 	using _: NS.Object,
@@ -128,6 +134,8 @@ kVK_Escape :: u16(0x35)
 kVK_ANSI_0 :: u16(0x1D)
 kVK_Option :: u16(0x3A)
 kVK_RightOption :: u16(0x3D)
+kVK_Shift :: u16(0x38)
+kVK_RightShift :: u16(0x3C)
 kCGEventSourceStateCombined :: i32(0)
 kCGMouseButtonLeft :: u32(0)
 
@@ -154,6 +162,15 @@ g_pan_down: bool
 g_pan_last: CGPoint
 
 g_zero_down: bool // edge guard for the "0" reset key
+
+// Coordinate readout shown while Shift is held.
+g_coord_layer: ^CATextLayer
+g_img_height: CGFloat // captured image height in pixels, for top-left origin
+g_backing_scale: CGFloat = 1 // image pixels per point (2 on Retina)
+
+// Measurement anchor: image pixel under the cursor when Shift was pressed.
+g_measure_active: bool
+g_measure_anchor: CGPoint
 
 MIN_SCALE :: CGFloat(0.2)
 MAX_SCALE :: CGFloat(100)
@@ -325,6 +342,50 @@ update_spotlight :: proc "c" (mouse: CGPoint, visible: bool) {
 	msgSend(nil, CATransaction, "commit")
 }
 
+// Show the mouse movement in image pixels since Shift was pressed.
+update_coords :: proc "c" (mouse: CGPoint, visible: bool) {
+	msgSend(nil, CATransaction, "begin")
+	msgSend(nil, CATransaction, "setDisableActions:", NS.BOOL(true))
+
+	if !visible {
+		g_measure_active = false
+		msgSend(nil, g_coord_layer, "setHidden:", NS.BOOL(true))
+		msgSend(nil, CATransaction, "commit")
+		return
+	}
+
+	// screen = a*content + offset  =>  content = (screen - offset) / a
+	// Content coords are in points; multiply by the backing scale to get real
+	// image pixels (Retina displays capture at 2x the point dimensions).
+	a := g_flipped ? -g_scale : g_scale
+	cx := (mouse.x - g_offset.x) / a * g_backing_scale
+	// Content y is bottom-left origin; convert to top-left pixel space.
+	cy := (g_bounds.size.height - (mouse.y - g_offset.y) / g_scale) * g_backing_scale
+
+	// On the Shift press edge, anchor the measurement at the current pixel.
+	if !g_measure_active {
+		g_measure_anchor = {cx, cy}
+		g_measure_active = true
+	}
+
+	// Count pixel-border crossings: floor both positions so each time the
+	// cursor moves into the next pixel the count changes by exactly 1.
+	dx := int(math.floor(f64(cx)) - math.floor(f64(g_measure_anchor.x)))
+	dy := int(math.floor(f64(cy)) - math.floor(f64(g_measure_anchor.y)))
+
+	context = runtime.default_context()
+	str := fmt.ctprintf("x: %dpx\ny: %dpx", dx, dy)
+	ns_str := msgSend(^NS.String, NS.String, "stringWithUTF8String:", str)
+	msgSend(nil, g_coord_layer, "setString:", ns_str)
+
+	// Position the text below-right of the cursor.
+	fr := CGRect{{mouse.x + 16, mouse.y - 44}, {140, 40}}
+	msgSend(nil, g_coord_layer, "setFrame:", fr)
+	msgSend(nil, g_coord_layer, "setHidden:", NS.BOOL(false))
+
+	msgSend(nil, CATransaction, "commit")
+}
+
 dismiss_handler :: proc "c" (user_data: rawptr, event: rawptr) {
 	app := msgSend(^NSApplication, NSApplication, "sharedApplication")
 	msgSend(nil, app, "terminate:", rawptr(nil))
@@ -390,6 +451,12 @@ tick :: proc "c" (user_data: rawptr, timer: rawptr) {
 	}
 
 	update_spotlight(loc, ctrl)
+
+	// Shift shows the real pixel coordinates under the cursor.
+	shift :=
+		bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_Shift)) ||
+		bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_RightShift))
+	update_coords(loc, shift)
 }
 
 main :: proc() {
@@ -445,11 +512,28 @@ main :: proc() {
 	msgSend(nil, overlay, "setHidden:", NS.BOOL(true))
 	g_overlay = overlay
 
+	// Text layer for the pixel-coordinate readout (hidden until Shift held).
+	g_img_height = CGFloat(CGImageGetHeight(image))
+	g_backing_scale = g_img_height / g_bounds.size.height
+	coord := msgSend(^CATextLayer, CATextLayer, "alloc")
+	coord = msgSend(^CATextLayer, coord, "init")
+	msgSend(nil, coord, "setFontSize:", CGFloat(16))
+	white := CGColorCreateGenericRGB(1, 1, 1, 1)
+	msgSend(nil, coord, "setForegroundColor:", white)
+	CGColorRelease(white)
+	msgSend(nil, coord, "setWrapped:", NS.BOOL(true))
+	msgSend(nil, coord, "setHidden:", NS.BOOL(true))
+	g_coord_layer = coord
+
 	overlay_view := msgSend(^NSView, NSView, "alloc")
 	overlay_view = msgSend(^NSView, overlay_view, "initWithFrame:", frame)
-	// Layer-hosting: assign the layer BEFORE wantsLayer so it hosts our layer.
-	msgSend(nil, overlay_view, "setLayer:", overlay)
+	// Plain backing layer that hosts BOTH the spotlight shape layer and the
+	// coord text layer as siblings. (Previously coord was a child of `overlay`,
+	// which is hidden whenever the spotlight is off, so it never showed.)
 	msgSend(nil, overlay_view, "setWantsLayer:", NS.BOOL(true))
+	host := msgSend(^CALayer, overlay_view, "layer")
+	msgSend(nil, host, "addSublayer:", overlay)
+	msgSend(nil, host, "addSublayer:", coord)
 
 	// Container hosts the single content layer whose `contents` is the capture.
 	container := msgSend(^NSView, NSView, "alloc")
