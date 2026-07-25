@@ -61,11 +61,39 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc code sign so screen-recording permission sticks to the bundle
-# identity instead of being lost on every rebuild.
-echo "==> ad-hoc code signing"
-codesign --force --deep --sign - "$APP" 2>/dev/null || \
-	echo "   (codesign skipped/failed; app still runnable)"
+# Code signing.
+#
+#   SIGN_ID unset       -> ad-hoc ("-"): fine for local dev, but Gatekeeper
+#                          will warn on other machines. Screen-recording
+#                          permission still sticks to the stable bundle id.
+#   SIGN_ID="Developer ID Application: Name (TEAMID)" -> real, distributable,
+#                          notarizable signature with hardened runtime.
+#
+# Sign inside-out: inner Mach-O binaries first, then the bundle. `--deep` is
+# deprecated and unreliable for notarization, so we sign each piece explicitly.
+SIGN_ID="${SIGN_ID:--}"
+ENTITLEMENTS="moomer.entitlements"
+
+if [ "$SIGN_ID" = "-" ]; then
+	echo "==> ad-hoc code signing (set SIGN_ID for a distributable signature)"
+	RUNTIME_OPTS=""
+else
+	echo "==> Developer ID code signing: $SIGN_ID"
+	RUNTIME_OPTS="--options runtime --timestamp"
+fi
+
+for bin in "$MACOS/moomer" "$MACOS/moomer-launcher"; do
+	codesign --force $RUNTIME_OPTS \
+		${ENTITLEMENTS:+--entitlements "$ENTITLEMENTS"} \
+		--sign "$SIGN_ID" "$bin"
+done
+
+codesign --force $RUNTIME_OPTS \
+	--entitlements "$ENTITLEMENTS" \
+	--sign "$SIGN_ID" "$APP"
+
+codesign --verify --strict --verbose=2 "$APP" || \
+	echo "   (codesign verify reported issues)"
 
 echo "==> built $APP"
 
