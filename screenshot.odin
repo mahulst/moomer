@@ -29,6 +29,8 @@ CGAffineTransform :: struct {
 
 foreign CoreGraphics {
 	CGMainDisplayID :: proc "c" () -> CGDirectDisplayID ---
+	CGPreflightScreenCaptureAccess :: proc "c" () -> bool ---
+	CGRequestScreenCaptureAccess :: proc "c" () -> bool ---
 	CGDisplayCreateImage :: proc "c" (display: CGDirectDisplayID) -> CGImageRef ---
 	CGDisplayBounds :: proc "c" (display: CGDirectDisplayID) -> CGRect ---
 	CGImageRelease :: proc "c" (image: CGImageRef) ---
@@ -311,6 +313,22 @@ scroll_handler :: proc "c" (user_data: rawptr, event: ^NSEvent) -> ^NSEvent {
 	return event
 }
 
+// Handles keyDown events so fast single key taps (e.g. Escape) are never
+// missed the way polling can. A local monitor is enough since our overlay
+// window receives key events while the app is active.
+key_handler :: proc "c" (user_data: rawptr, event: ^NSEvent) -> ^NSEvent {
+	code := msgSend(u16, event, "keyCode")
+	context = runtime.default_context()
+	fmt.printfln("[key] keyDown keycode 0x%X (%d)", code, code)
+	if code == kVK_Escape {
+		fmt.println("[esc] Escape keyDown - terminating")
+		app := msgSend(^NSApplication, NSApplication, "sharedApplication")
+		msgSend(nil, app, "terminate:", rawptr(nil))
+		return nil
+	}
+	return event
+}
+
 // --- Minimal global block wrapping scroll_handler ---
 // The stock NS.Block_createGlobalWithParam invoke returns void, but a local
 // event monitor's handler must return NSEvent*. We build a global block whose
@@ -346,6 +364,13 @@ scroll_block_invoke :: proc "c" (bl: ^Block_Literal, event: ^NSEvent) -> ^NSEven
 }
 
 scroll_block: Block_Literal
+
+key_block_invoke :: proc "c" (bl: ^Block_Literal, event: ^NSEvent) -> ^NSEvent {
+	fn := (proc "c" (rawptr, ^NSEvent) -> ^NSEvent)(bl.user_proc)
+	return fn(bl.user_data, event)
+}
+
+key_block: Block_Literal
 
 update_spotlight :: proc "c" (mouse: CGPoint, visible: bool) {
 	// Disable implicit animations for instant, no-animation updates.
@@ -654,13 +679,6 @@ dismiss_handler :: proc "c" (user_data: rawptr, event: rawptr) {
 // Polled every frame by an NSTimer. Reads Ctrl state + mouse pos globally
 // (no key-window or Accessibility permission required).
 tick :: proc "c" (user_data: rawptr, timer: rawptr) {
-	// Quit on Escape.
-	if bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_Escape)) {
-		app := msgSend(^NSApplication, NSApplication, "sharedApplication")
-		msgSend(nil, app, "terminate:", rawptr(nil))
-		return
-	}
-
 	ctrl :=
 		bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_Control)) ||
 		bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_RightControl))
@@ -742,6 +760,13 @@ tick :: proc "c" (user_data: rawptr, timer: rawptr) {
 }
 
 main :: proc() {
+	if !CGPreflightScreenCaptureAccess() {
+		// Triggers the system permission prompt immediately at startup.
+		if !CGRequestScreenCaptureAccess() {
+			fmt.eprintln("Screen Recording permission denied. Grant it in System Settings > Privacy & Security > Screen Recording, then relaunch.")
+			os.exit(1)
+		}
+	}
 	display := CGMainDisplayID()
 	image := CGDisplayCreateImage(display)
 	if image == nil {
@@ -924,8 +949,26 @@ main :: proc() {
 		&scroll_block,
 	)
 
-	// Spotlight tracking via a polling timer (~60 fps). Works regardless of
-	// key-window status and needs no Accessibility permission.
+	// Escape (and any key) via an event monitor so fast single taps are never
+	// missed the way polling can miss them.
+	key_block = Block_Literal {
+		isa        = &_NSConcreteGlobalBlock,
+		flags      = BLOCK_IS_GLOBAL,
+		invoke     = rawptr(key_block_invoke),
+		descriptor = &scroll_block_descriptor,
+		user_proc  = rawptr(key_handler),
+		user_data  = nil,
+	}
+	msgSend(
+		nil,
+		NSEvent,
+		"addLocalMonitorForEventsMatchingMask:handler:",
+		NSEventMaskKeyDown,
+		&key_block,
+	)
+
+	// Spotlight tracking via a polling timer (~60 fps). Escape/keys are now
+	// event-driven, so polling only drives spotlight/mouse tracking.
 	tick_block := NS.Block_createGlobalWithParam(nil, tick)
 	timer := msgSend(
 		^NSTimer,
