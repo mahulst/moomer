@@ -764,13 +764,10 @@ save_selection :: proc "c" () {
 
 	bytes := msgSend(rawptr, png, "bytes")
 	length := int(msgSend(NS.UInteger, png, "length"))
-	fd, oerr := os.open(path, os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0o644)
-	if oerr != os.ERROR_NONE {
-		fmt.eprintfln("[shift] failed to create %s: %v", path, oerr)
+	if werr := os.write_entire_file(path, (cast([^]byte)bytes)[:length]); werr != nil {
+		fmt.eprintfln("[shift] failed to write %s: %v", path, werr)
 		return
 	}
-	os.write(fd, (cast([^]byte)bytes)[:length])
-	os.close(fd)
 
 	// Put the saved file path on the pasteboard as a string.
 	pb := msgSend(^NSPasteboard, NSPasteboard, "generalPasteboard")
