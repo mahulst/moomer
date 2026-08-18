@@ -3,6 +3,8 @@ package main
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:strings"
+import "core:time"
 import "base:intrinsics"
 import "base:runtime"
 import NS "core:sys/darwin/Foundation"
@@ -159,6 +161,7 @@ kVK_RightOption :: u16(0x3D)
 kVK_Shift :: u16(0x38)
 kVK_RightShift :: u16(0x3C)
 kVK_ANSI_C :: u16(0x08)
+kVK_ANSI_A :: u16(0x00)
 kVK_ANSI_G :: u16(0x05)
 kVK_ANSI_M :: u16(0x2E)
 kCGEventSourceStateCombined :: i32(0)
@@ -209,6 +212,7 @@ g_grid_down: bool           // edge guard for the "g" toggle key
 g_image: CGImageRef
 g_sel_px_lo, g_sel_px_hi, g_sel_py_lo, g_sel_py_hi: f64
 g_copy_down: bool
+g_save_down: bool // edge guard for the save-to-file "a" (with Shift)
 g_pick_down: bool // edge guard for the color-pick "c" (no Shift)
 
 // Annotation ("m") mode. Strokes are stored in content-point space (bottom-left
@@ -683,6 +687,101 @@ copy_selection :: proc "c" () {
 	fmt.printfln("[shift] copied %.0fx%.0f px selection to clipboard", rw, rh)
 }
 
+// Crop the current Shift selection and save it as a PNG under
+// ~/.moomer/screenshots/<UTC ISO8601 with ms>.png. The resulting file path is
+// also placed on the general pasteboard as a plain string.
+save_selection :: proc "c" () {
+	context = runtime.default_context()
+
+	if g_image == nil {
+		return
+	}
+	w := f64(CGImageGetWidth(g_image))
+	h := f64(CGImageGetHeight(g_image))
+
+	x0 := math.clamp(g_sel_px_lo, 0, w)
+	x1 := math.clamp(g_sel_px_hi, 0, w)
+	y0 := math.clamp(g_sel_py_lo, 0, h)
+	y1 := math.clamp(g_sel_py_hi, 0, h)
+	rw := x1 - x0
+	rh := y1 - y0
+	if rw < 1 || rh < 1 {
+		return
+	}
+
+	rect := CGRect{{CGFloat(x0), CGFloat(y0)}, {CGFloat(rw), CGFloat(rh)}}
+	cropped := CGImageCreateWithImageInRect(g_image, rect)
+	if cropped == nil {
+		return
+	}
+	defer CGImageRelease(cropped)
+
+	rep := msgSend(^NSBitmapImageRep, NSBitmapImageRep, "alloc")
+	rep = msgSend(^NSBitmapImageRep, rep, "initWithCGImage:", cropped)
+	if rep == nil {
+		return
+	}
+
+	NSBitmapImageFileTypePNG :: NS.UInteger(4)
+	empty := msgSend(^NS.Dictionary, NS.Dictionary, "dictionary")
+	png := msgSend(
+		^NS.Data,
+		rep,
+		"representationUsingType:properties:",
+		NSBitmapImageFileTypePNG,
+		empty,
+	)
+	if png == nil {
+		return
+	}
+
+	// Build the destination directory ~/.moomer/screenshots and ensure it exists.
+	home := os.get_env("HOME")
+	if home == "" {
+		fmt.eprintln("[shift] HOME not set, cannot save selection")
+		return
+	}
+	dir := fmt.tprintf("%s/.moomer/screenshots", home)
+	if !os.exists(dir) {
+		if err := os.make_directory(fmt.tprintf("%s/.moomer", home)); err != nil && !os.exists(fmt.tprintf("%s/.moomer", home)) {
+			fmt.eprintfln("[shift] mkdir failed: %v", err)
+			return
+		}
+		if err := os.make_directory(dir); err != nil && !os.exists(dir) {
+			fmt.eprintfln("[shift] mkdir failed: %v", err)
+			return
+		}
+	}
+
+	// Timestamped filename in UTC: YYYY-MM-DDTHH:MM:SS.mmmZ.png
+	now := time.now()
+	yy, mo, dd := time.date(now)
+	hh, mi, ss := time.clock(now)
+	ms := i64(now._nsec / 1_000_000 % 1000)
+	name := fmt.tprintf(
+		"%04d-%02d-%02dT%02d:%02d:%02d.%03dZ.png",
+		yy, mo, dd, hh, mi, ss, ms,
+	)
+	path := fmt.tprintf("%s/%s", dir, name)
+
+	bytes := msgSend(rawptr, png, "bytes")
+	length := int(msgSend(NS.UInteger, png, "length"))
+	if !os.write_entire_file(path, (cast([^]byte)bytes)[:length]) {
+		fmt.eprintfln("[shift] failed to write %s", path)
+		return
+	}
+
+	// Put the saved file path on the pasteboard as a string.
+	pb := msgSend(^NSPasteboard, NSPasteboard, "generalPasteboard")
+	msgSend(nil, pb, "clearContents")
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	path_str := msgSend(^NS.String, NS.String, "stringWithUTF8String:", cpath)
+	str_type := msgSend(^NS.String, NS.String, "stringWithUTF8String:", cstring("public.utf8-plain-text"))
+	msgSend(NS.BOOL, pb, "setString:forType:", path_str, str_type)
+
+	fmt.printfln("[shift] saved %.0fx%.0f px selection to %s", rw, rh, path)
+}
+
 // Read the color of the image pixel under the cursor and copy its hex string
 // (e.g. "#3FA9F5") to the general pasteboard.
 copy_pixel_color :: proc "c" (mouse: CGPoint) {
@@ -832,6 +931,13 @@ tick :: proc "c" (user_data: rawptr, timer: rawptr) {
 	if copy && !g_copy_down && shift {
 		copy_selection()
 	}
+	// Shift + "a" saves the current selection to a timestamped PNG file and
+	// copies its path to the clipboard.
+	save := bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_ANSI_A))
+	if save && !g_save_down && shift {
+		save_selection()
+	}
+	g_save_down = save
 	// Without Shift, "c" copies the color of the pixel under the cursor.
 	if copy && !g_pick_down && !shift {
 		copy_pixel_color(loc)

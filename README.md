@@ -35,6 +35,7 @@ the capture again.
 | **Option**            | Toggle a horizontal mirror flip, anchored at the cursor            |
 | **Hold Shift**        | Measure mouse movement in image pixels from where Shift was pressed (border-crossing count, Retina-aware) |
 | **Shift + c**         | Copy the current Shift selection to the clipboard as a PNG image   |
+| **Shift + a**         | Save the current Shift selection as a PNG to `~/.moomer/screenshots/` (UTC-timestamped) and copy its path to the clipboard |
 | **c**                 | Copy the color of the pixel under the cursor as a hex string (e.g. `#3FA9F5`) |
 | **m**                 | Toggle annotation mode — click for a 2px magenta dot, click-drag for a freehand 2px magenta line, pinned to the image |
 | **g**                 | Toggle a thin light-grey grid on image-pixel edges (shown once zoomed in enough) |
