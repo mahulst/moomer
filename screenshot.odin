@@ -736,19 +736,17 @@ save_selection :: proc "c" () {
 	}
 
 	// Build the destination directory ~/.moomer/screenshots and ensure it exists.
-	home := os.get_env("HOME")
+	home := os.get_env("HOME", context.temp_allocator)
 	if home == "" {
 		fmt.eprintln("[shift] HOME not set, cannot save selection")
 		return
 	}
 	dir := fmt.tprintf("%s/.moomer/screenshots", home)
 	if !os.exists(dir) {
-		if err := os.make_directory(fmt.tprintf("%s/.moomer", home)); err != nil && !os.exists(fmt.tprintf("%s/.moomer", home)) {
-			fmt.eprintfln("[shift] mkdir failed: %v", err)
-			return
-		}
-		if err := os.make_directory(dir); err != nil && !os.exists(dir) {
-			fmt.eprintfln("[shift] mkdir failed: %v", err)
+		os.make_directory(fmt.tprintf("%s/.moomer", home))
+		os.make_directory(dir)
+		if !os.exists(dir) {
+			fmt.eprintfln("[shift] mkdir failed for %s", dir)
 			return
 		}
 	}
@@ -766,10 +764,13 @@ save_selection :: proc "c" () {
 
 	bytes := msgSend(rawptr, png, "bytes")
 	length := int(msgSend(NS.UInteger, png, "length"))
-	if !os.write_entire_file(path, (cast([^]byte)bytes)[:length]) {
-		fmt.eprintfln("[shift] failed to write %s", path)
+	fd, oerr := os.open(path, os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0o644)
+	if oerr != os.ERROR_NONE {
+		fmt.eprintfln("[shift] failed to create %s: %v", path, oerr)
 		return
 	}
+	os.write(fd, (cast([^]byte)bytes)[:length])
+	os.close(fd)
 
 	// Put the saved file path on the pasteboard as a string.
 	pb := msgSend(^NSPasteboard, NSPasteboard, "generalPasteboard")
