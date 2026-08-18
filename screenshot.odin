@@ -41,6 +41,8 @@ foreign CoreGraphics {
 	CGPathCreateMutable :: proc "c" () -> CGMutablePathRef ---
 	CGPathAddRect :: proc "c" (path: CGMutablePathRef, m: rawptr, rect: CGRect) ---
 	CGPathAddEllipseInRect :: proc "c" (path: CGMutablePathRef, m: rawptr, rect: CGRect) ---
+	CGPathMoveToPoint :: proc "c" (path: CGMutablePathRef, m: rawptr, x, y: CGFloat) ---
+	CGPathAddLineToPoint :: proc "c" (path: CGMutablePathRef, m: rawptr, x, y: CGFloat) ---
 	CGPathRelease :: proc "c" (path: CGPathRef) ---
 
 	CGColorCreateGenericRGB :: proc "c" (r, g, b, a: CGFloat) -> CGColorRef ---
@@ -158,6 +160,7 @@ kVK_Shift :: u16(0x38)
 kVK_RightShift :: u16(0x3C)
 kVK_ANSI_C :: u16(0x08)
 kVK_ANSI_G :: u16(0x05)
+kVK_ANSI_M :: u16(0x2E)
 kCGEventSourceStateCombined :: i32(0)
 kCGMouseButtonLeft :: u32(0)
 
@@ -207,6 +210,15 @@ g_image: CGImageRef
 g_sel_px_lo, g_sel_px_hi, g_sel_py_lo, g_sel_py_hi: f64
 g_copy_down: bool
 g_pick_down: bool // edge guard for the color-pick "c" (no Shift)
+
+// Annotation ("m") mode. Strokes are stored in content-point space (bottom-left
+// origin, matching the un-zoomed content layer) so they stay pinned to the
+// image when zooming/panning. Each frame the path is rebuilt in screen space.
+g_annotate_on: bool     // whether annotation mode is active
+g_annotate_down: bool   // edge guard for the "m" toggle key
+g_anno_layer: ^CAShapeLayer
+g_strokes: [dynamic][dynamic]CGPoint // each stroke is a list of content-space points
+g_anno_drawing: bool    // a stroke is currently being drawn (mouse held)
 
 MIN_SCALE :: CGFloat(0.2)
 MAX_SCALE :: CGFloat(100)
@@ -564,6 +576,55 @@ update_grid :: proc "c" () {
 	msgSend(nil, CATransaction, "commit")
 }
 
+// Convert a screen point to content-point space (bottom-left origin), the
+// coordinate space in which annotation strokes are stored so they stay pinned
+// to the image across zoom/pan. Inverse of the apply_zoom transform.
+screen_to_content :: proc "c" (m: CGPoint) -> CGPoint {
+	a := g_flipped ? -g_scale : g_scale
+	return {(m.x - g_offset.x) / a, (m.y - g_offset.y) / g_scale}
+}
+
+// Map a stored content-space point back to screen space (matches apply_zoom).
+content_to_screen :: proc "c" (c: CGPoint) -> CGPoint {
+	a := g_flipped ? -g_scale : g_scale
+	return {a * c.x + g_offset.x, g_scale * c.y + g_offset.y}
+}
+
+// Rebuild the magenta annotation path in screen space each frame so it tracks
+// zoom/pan while keeping a constant 2px on-screen line width.
+update_annotation :: proc "c" () {
+	msgSend(nil, CATransaction, "begin")
+	msgSend(nil, CATransaction, "setDisableActions:", NS.BOOL(true))
+
+	path := CGPathCreateMutable()
+	for &stroke in g_strokes {
+		n := len(stroke)
+		if n == 0 {
+			continue
+		}
+		if n == 1 {
+			// A single click is a dot: a zero-length stroked subpath renders as
+			// a round cap (a small filled dot) thanks to the round line cap.
+			p := content_to_screen(stroke[0])
+			CGPathMoveToPoint(path, nil, p.x, p.y)
+			CGPathAddLineToPoint(path, nil, p.x, p.y)
+			continue
+		}
+		p0 := content_to_screen(stroke[0])
+		CGPathMoveToPoint(path, nil, p0.x, p0.y)
+		for i in 1 ..< n {
+			p := content_to_screen(stroke[i])
+			CGPathAddLineToPoint(path, nil, p.x, p.y)
+		}
+	}
+
+	msgSend(nil, g_anno_layer, "setPath:", path)
+	msgSend(nil, g_anno_layer, "setHidden:", NS.BOOL(len(g_strokes) == 0))
+	CGPathRelease(path)
+
+	msgSend(nil, CATransaction, "commit")
+}
+
 // Crop the current Shift selection out of the captured image and place it on
 // the general pasteboard as a bitmap-backed NSImage.
 copy_selection :: proc "c" () {
@@ -685,16 +746,45 @@ tick :: proc "c" (user_data: rawptr, timer: rawptr) {
 
 	loc := msgSend(CGPoint, NSEvent, "mouseLocation")
 
-	// Click-and-drag to pan. Track the left mouse button globally and move
-	// the content by the cursor delta while held.
-	pan := bool(CGEventSourceButtonState(kCGEventSourceStateCombined, kCGMouseButtonLeft))
-	if pan {
-		if g_pan_down {
-			pan_by(loc.x - g_pan_last.x, loc.y - g_pan_last.y)
-		}
-		g_pan_last = loc
+	// "m" toggles annotation mode (press edge). While active, the left mouse
+	// button draws magenta strokes instead of panning.
+	context = runtime.default_context()
+	annotate := bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_ANSI_M))
+	if annotate && !g_annotate_down {
+		g_annotate_on = !g_annotate_on
+		fmt.printfln("[annotate] %s", g_annotate_on ? "on" : "off")
 	}
-	g_pan_down = pan
+	g_annotate_down = annotate
+
+	// Click-and-drag to pan. Track the left mouse button globally and move
+	// the content by the cursor delta while held. In annotation mode the left
+	// button draws instead.
+	pan := bool(CGEventSourceButtonState(kCGEventSourceStateCombined, kCGMouseButtonLeft))
+	if g_annotate_on {
+		if pan {
+			c := screen_to_content(loc)
+			if !g_anno_drawing {
+				// New stroke on the press edge.
+				append(&g_strokes, make([dynamic]CGPoint))
+				g_anno_drawing = true
+			}
+			s := &g_strokes[len(g_strokes) - 1]
+			append(s, c)
+		} else {
+			g_anno_drawing = false
+		}
+		g_pan_down = pan
+		g_pan_last = loc
+	} else {
+		if pan {
+			if g_pan_down {
+				pan_by(loc.x - g_pan_last.x, loc.y - g_pan_last.y)
+			}
+			g_pan_last = loc
+		}
+		g_pan_down = pan
+	}
+	update_annotation()
 
 	// "0" resets zoom, pan, and flip to the original view (press edge).
 	zero := bool(CGEventSourceKeyState(kCGEventSourceStateCombined, kVK_ANSI_0))
@@ -887,6 +977,24 @@ main :: proc() {
 	msgSend(nil, grid, "setHidden:", NS.BOOL(true))
 	g_grid_layer = grid
 
+	// Shape layer that draws magenta annotation strokes. Drawn in screen space
+	// (rebuilt each frame) so the 2px width stays constant while the strokes
+	// follow the image through zoom/pan.
+	anno := msgSend(^CAShapeLayer, CAShapeLayer, "alloc")
+	anno = msgSend(^CAShapeLayer, anno, "init")
+	msgSend(nil, anno, "setFrame:", g_bounds)
+	anno_clear := CGColorCreateGenericRGB(0, 0, 0, 0)
+	msgSend(nil, anno, "setFillColor:", anno_clear)
+	CGColorRelease(anno_clear)
+	magenta := CGColorCreateGenericRGB(1, 0, 1, 1)
+	msgSend(nil, anno, "setStrokeColor:", magenta)
+	CGColorRelease(magenta)
+	msgSend(nil, anno, "setLineWidth:", CGFloat(2))
+	msgSend(nil, anno, "setLineCap:", NS.AT("round"))
+	msgSend(nil, anno, "setLineJoin:", NS.AT("round"))
+	msgSend(nil, anno, "setHidden:", NS.BOOL(true))
+	g_anno_layer = anno
+
 	overlay_view := msgSend(^NSView, NSView, "alloc")
 	overlay_view = msgSend(^NSView, overlay_view, "initWithFrame:", frame)
 	// Plain backing layer that hosts BOTH the spotlight shape layer and the
@@ -897,6 +1005,7 @@ main :: proc() {
 	msgSend(nil, host, "addSublayer:", overlay)
 	msgSend(nil, host, "addSublayer:", spot_ring)
 	msgSend(nil, host, "addSublayer:", grid)
+	msgSend(nil, host, "addSublayer:", anno)
 	msgSend(nil, host, "addSublayer:", rect)
 	msgSend(nil, host, "addSublayer:", box)
 
